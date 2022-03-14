@@ -8,10 +8,11 @@ version = '1.0-SNAPSHOT'
 
 repositories {
     mavenCentral()
+    maven { url 'https://jitpack.io' }
 }
 
 dependencies {
-
+    implementation 'com.github.demidko:aot:2021.11.17'
 }
 
 compileKotlin {
