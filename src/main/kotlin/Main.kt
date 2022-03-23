@@ -4,9 +4,10 @@ import java.io.File
 import java.net.URL
 import java.util.*
 import kotlin.NoSuchElementException
+import kotlin.math.ln
 
 fun main() {
-    BoolSearcher().demo()
+    StatsCounter().start()
 }
 
 const val resultDirectoryPath = "./result"
@@ -20,6 +21,15 @@ val lemmasFile = File(lemmasFilePath)
 
 const val indexesFilePath = "./inv_indexes.txt"
 val indexesFile = File(indexesFilePath)
+
+const val lemmasIndexesFilePath = "./inv_indexes_lemmas.txt"
+val lemmasIndexesFile = File(lemmasIndexesFilePath)
+
+const val wordsTfIdfDirectoryPath = "./words_tf_idf"
+val wordsTfIdfDirectory = File(wordsTfIdfDirectoryPath)
+
+const val lemmasTfIdfDirectoryPath = "./lemmas_tf_idf"
+val lemmasTfIdfDirectory = File(lemmasTfIdfDirectoryPath)
 
 class Crawler {
 
@@ -105,20 +115,27 @@ class Lemmatizer {
 class Indexer {
     init {
         checkFileAndClean(indexesFile)
+        checkFileAndClean(lemmasIndexesFile)
     }
 
     fun start() {
         val map = mutableMapOf<LemmaPair, MutableList<Int>>()
+        val lemmasMap = mutableMapOf<String, MutableSet<Int>>()
         for (file in resultDirectory.listFiles() ?: emptyArray()) {
             val num = file.nameWithoutExtension.toInt()
             val words = FileReader.readWebPageFile(file)
             for (word in words) {
                 map[word] = (map[word] ?: mutableListOf()).apply { add(num) }
+                lemmasMap[word.lemma] = (lemmasMap[word.lemma] ?: mutableSetOf()).apply { add(num) }
             }
         }
         for (entry in map) {
             indexesFile.appendText("${entry.key.word} ${entry.value.joinToString(separator = " ")}\n")
         }
+        for (lemEntry in lemmasMap) {
+            lemmasIndexesFile.appendText("${lemEntry.key} ${lemEntry.value.joinToString(separator = " ")}\n")
+        }
+
     }
 }
 
@@ -135,7 +152,11 @@ class FileReader {
         )
 
         fun readWebPageFile(file: File): Set<LemmaPair> {
-            val result = mutableSetOf<LemmaPair>()
+            return readWebPageFileAsList(file).toSet()
+        }
+
+        fun readWebPageFileAsList(file: File): List<LemmaPair> {
+            val result = mutableListOf<LemmaPair>()
             println("Reading from file ${file.name}")
             val scanner = Scanner(file)
             while (scanner.hasNext()) {
@@ -177,10 +198,10 @@ class FileReader {
             return result
         }
 
-        fun readIndexesFile(): List<Index> {
-            println("Reading indexes file")
+        fun readIndexesFile(file: File): List<Index> {
+            println("Reading indexes file ${file.name}")
             val result = mutableListOf<Index>()
-            val scanner = Scanner(indexesFile)
+            val scanner = Scanner(file)
             while (scanner.hasNextLine()) {
                 val line = scanner.nextLine()
                 val arr = line.split(" ")
@@ -253,6 +274,59 @@ class BoolSearcher() {
 
     enum class LogicType {
         AND, OR, NOR
+    }
+}
+
+class StatsCounter {
+
+    init {
+        if (wordsTfIdfDirectory.exists()) {
+            wordsTfIdfDirectory.deleteRecursively()
+        }
+        wordsTfIdfDirectory.mkdir()
+        if (lemmasTfIdfDirectory.exists()) {
+            lemmasTfIdfDirectory.deleteRecursively()
+        }
+        lemmasTfIdfDirectory.mkdir()
+    }
+
+    fun start() {
+        val allLemmas = FileReader.readIndexesFile(lemmasIndexesFile)
+        val allWords = FileReader.readIndexesFile(indexesFile)
+        val files = resultDirectory.listFiles() ?: emptyArray()
+        for (file in files) {
+            val wordsMap = mutableMapOf<Index, Int>()
+            val lemmasMap = mutableMapOf<Index, Int>()
+            val fileNum = file.nameWithoutExtension.toInt()
+            val fileWords = FileReader.readWebPageFileAsList(file)
+            val tfWords = allWords.filter { it.places.contains(fileNum) }
+
+            for (wordIndex in tfWords) {
+                val compatible = fileWords.filter { it.word == wordIndex.word }
+                wordsMap[wordIndex] = compatible.size
+
+                val lemma = allLemmas.find { it.word == compatible[0].lemma }
+                    ?: throw NoSuchElementException("Может под диваном лежит?")
+                lemmasMap[lemma] = (lemmasMap[lemma] ?: 0) + compatible.size
+            }
+            val wordsTfFile = File("$wordsTfIdfDirectoryPath/$fileNum.txt")
+            wordsTfFile.createNewFile()
+
+            val lemmasTfFile = File("$lemmasTfIdfDirectoryPath/$fileNum.txt")
+            lemmasTfFile.createNewFile()
+
+            fun writeMapIntoFile(map: Map<Index, Int>, tfFile: File) {
+                for (entry in map) {
+                    val tf = entry.value.toDouble() / fileWords.size.toDouble()
+                    val idf = ln(files.size.toDouble() / entry.key.places.size.toDouble())
+                    tfFile.appendText("${entry.key.word} $idf ${tf * idf}\n")
+                }
+            }
+
+            writeMapIntoFile(wordsMap, wordsTfFile)
+            writeMapIntoFile(lemmasMap, lemmasTfFile)
+
+        }
     }
 }
 
