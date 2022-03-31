@@ -5,10 +5,14 @@ import java.net.URL
 import java.util.*
 import kotlin.NoSuchElementException
 import kotlin.math.ln
+import kotlin.math.sqrt
 
 fun main() {
-    StatsCounter().start()
+    SearchApp().start()
 }
+
+const val indexFilePath = "./index.txt"
+val indexFile = File(indexFilePath)
 
 const val resultDirectoryPath = "./result"
 val resultDirectory = File(resultDirectoryPath)
@@ -33,7 +37,6 @@ val lemmasTfIdfDirectory = File(lemmasTfIdfDirectoryPath)
 
 class Crawler {
 
-    private val indexFile: File = File("./index.txt")
     private var counter = 0
 
     init {
@@ -65,7 +68,6 @@ class Crawler {
         scanner.useDelimiter("\\Z")
         val content = scanner.next()
         scanner.close()
-        println("reading from $url. Content length: ${content.length}")
         return content
     }
 
@@ -75,7 +77,6 @@ class Crawler {
         file.createNewFile()
         file.writeText(content)
         indexFile.appendText("$counter: $url\n")
-        println("writing $url to file number $counter. Absolute path: ${file.absolutePath}")
         counter++
         return file
     }
@@ -143,14 +144,6 @@ class FileReader {
 
     companion object {
 
-        private val unusedPartOfSpeech = listOf(
-            PartOfSpeech.Union,
-            PartOfSpeech.Numeral,
-            PartOfSpeech.OrdinalNumber,
-            PartOfSpeech.Pretext,
-            PartOfSpeech.Particle,
-        )
-
         fun readWebPageFile(file: File): Set<LemmaPair> {
             return readWebPageFileAsList(file).toSet()
         }
@@ -171,12 +164,9 @@ class FileReader {
                     continue
                 }
                 lemma?.let {
-                    print(lemma)
-                    print(" ")
                     result.add(LemmaPair(it.toString(), word))
                 }
             }
-            println()
             return result
         }
 
@@ -189,12 +179,8 @@ class FileReader {
                 val words = line.split(" ")
                 val lemma = words.getOrNull(0) ?: continue
                 val word = words.getOrNull(1) ?: continue
-                result.add(LemmaPair(lemma, word).also {
-                    print(it)
-                    print(" ")
-                })
+                result.add(LemmaPair(lemma, word))
             }
-            println()
             return result
         }
 
@@ -215,10 +201,39 @@ class FileReader {
             }
             return result
         }
+
+        fun readIdfFile(file: File): List<WordTfIdf> {
+            println("Reading tf idf from file ${file.name}")
+            val result = mutableListOf<WordTfIdf>()
+            val scanner = Scanner(file)
+            while (scanner.hasNextLine()) {
+                val line = scanner.nextLine()
+                val arr = line.split(" ")
+                val word = arr.getOrNull(0) ?: continue
+                val idf = arr.getOrNull(1)?.toDouble() ?: continue
+                val tfIdf = arr.getOrNull(2)?.toDouble() ?: continue
+                result.add(WordTfIdf(word, idf, tfIdf))
+            }
+            return result
+
+        }
+
+        fun readIndexfile(): Map<Int, String> {
+            val result = mutableMapOf<Int, String>()
+            val scanner = Scanner(indexFile)
+            while (scanner.hasNextLine()) {
+                val line = scanner.nextLine()
+                val arr = line.split(": ")
+                val num = arr.getOrNull(0)?.toInt() ?: throw IllegalArgumentException("АААААААААААА")
+                val str = arr.getOrNull(1) ?: throw IllegalArgumentException("Я ТАК БОЛЬШЕ НЕ МОГУ")
+                result[num] = str
+            }
+            return result
+        }
     }
 }
 
-class BoolSearcher() {
+class BoolSearcher : BaseSearcher() {
 
     fun demo() {
         println("условия & зоны")
@@ -252,24 +267,6 @@ class BoolSearcher() {
 
     private fun nor(l1: List<Int>, l2: List<Int>): Set<Int> {
         return l1.subtract(l2)
-    }
-
-    private fun searchForWord(word: String): List<Int> {
-        val scanner = Scanner(indexesFile)
-        while (scanner.hasNextLine()) {
-            val line = scanner.nextLine()
-            if (line.startsWith(word)) {
-                val arr = line.split(" ")
-                val list = mutableListOf<Int>()
-                for (i in 1 until arr.size) {
-                    val num = arr[i].toInt()
-                    list.add(num)
-                }
-                return list
-            }
-
-        }
-        throw NoSuchElementException("По карманам поищи")
     }
 
     enum class LogicType {
@@ -330,6 +327,165 @@ class StatsCounter {
     }
 }
 
+class SearchApp {
+    fun start() {
+        val searcher = VectorSearcher()
+        while (true) {
+            println("Готов к поиску. Что ищем?")
+            val str = readLine() ?: continue
+
+            try {
+                val res = searcher.search(str)
+                if (res.isEmpty()) {
+                    println("Ничего не удалось найти. Давайте попробуем еще раз")
+                    continue
+                }
+                println("Вот что мы нашли:")
+                for (url in res.reversed()) {
+                    println(url)
+                }
+            }catch (e: Exception) {
+                println("Что то пошло не так. Давайте попробуем еще раз?")
+                continue
+            }
+        }
+    }
+}
+
+class VectorSearcher : BaseSearcher() {
+
+    val allUrls = FileReader.readIndexfile()
+
+    fun search(query: String): List<String> {
+        val q = formatQuery(query)
+
+        val filesIndexes = mutableSetOf<Int>()
+        for (word in q) {
+            filesIndexes.addAll(searchForWord(word, lemmasIndexesFile))
+        }
+
+        val filesVectorsMap = mutableMapOf<Int, List<Double>>()
+        val vectorizer = Vectorizer()
+        for (num in filesIndexes) {
+            filesVectorsMap[num] = vectorizer.vectorise(num)
+        }
+        val qVector = vectorizer.vectorise(q)
+
+        val filesSimilarityMap = mutableMapOf<Int, Double>()
+        val vectorsComparer = VectorsComparer()
+        for (num in filesIndexes) {
+            filesSimilarityMap[num] =
+                vectorsComparer.calculateVectorsSimilarity(
+                    qVector,
+                    filesVectorsMap[num] ?: throw NoSuchElementException("А че где...")
+                )
+        }
+        val sortedNums = filesSimilarityMap.toList().sortedBy { (_, value) -> value }.map { it.first }
+        val urls = sortedNums.mapNotNull { allUrls[it] }
+        return urls
+    }
+
+    private fun formatQuery(query: String): List<String> {
+        val arr = query.split(" ")
+        val res = mutableListOf<String>()
+        for (word in arr) {
+            word.replace(Regex("[;,!?()\"]"), "")
+            val meanings = WordformMeaning.lookupForMeanings(word)
+            val lemma = meanings.getOrNull(0)?.lemma ?: continue
+            if (unusedPartOfSpeech.contains(lemma.partOfSpeech)) {
+                continue
+            }
+            lemma?.let {
+                res.add(it.toString())
+            }
+        }
+        if (res.isEmpty()) throw IllegalArgumentException("Все совсем не так как мы ожидали")
+        return res
+    }
+}
+
+open class BaseSearcher {
+
+    /**
+     *  @param file indexesFile format only!
+     */
+    protected fun searchForWord(word: String, file: File? = null): List<Int> {
+        val scanner = Scanner(file ?: indexesFile)
+        while (scanner.hasNextLine()) {
+            val line = scanner.nextLine()
+            if (line.startsWith(word)) {
+                val arr = line.split(" ")
+                val list = mutableListOf<Int>()
+                for (i in 1 until arr.size) {
+                    val num = arr[i].toInt()
+                    list.add(num)
+                }
+                return list
+            }
+
+        }
+        throw NoSuchElementException("По карманам поищи")
+    }
+}
+
+class VectorsComparer {
+    fun calculateVectorsSimilarity(l1: List<Double>, l2: List<Double>): Double {
+        val length = l1.size
+        if (l2.size != length) throw IllegalArgumentException("Вы эти колоды в киосках заправляете что ли?")
+        var sm = 0.0
+        var s1 = 0.0
+        var s2 = 0.0
+        for (numIndexed in l1.withIndex()) {
+            sm += (numIndexed.value * l2[numIndexed.index])
+            s1 += numIndexed.value
+            s2 += l2[numIndexed.index]
+        }
+        val sim = sm / (sqrt(s1) * sqrt(s2))
+        return sim
+    }
+}
+
+class Vectorizer {
+
+    val lemmas = mutableListOf<String>()
+    val idfs = mutableMapOf<String, Double>()
+
+    init {
+        val wordPairs = FileReader.readLemmasFile()
+        val _lemmas = wordPairs.map { it.lemma }.distinct()
+        lemmas.addAll(_lemmas)
+    }
+
+    fun vectorise(file: File): List<Double> {
+        val list = MutableList(lemmas.size) { 0.0 }
+        val wtfList = FileReader.readIdfFile(file)
+        for (wtf in wtfList) {
+            idfs[wtf.word] = wtf.idf
+            list[lemmas.indexOf(wtf.word)] = wtf.tf_idf
+        }
+        return list
+    }
+
+    fun vectorise(fileNum: Int) = vectorise(File("$lemmasTfIdfDirectoryPath/$fileNum.txt"))
+
+    fun vectorise(queryLemmasList: List<String>): List<Double> {
+        val list = MutableList(lemmas.size) { 0.0 }
+        for (word in queryLemmasList) {
+            val tf = queryLemmasList.count { it == word }.toDouble() / queryLemmasList.size.toDouble()
+            val idf = idfs[word] ?: continue
+            val tfIdf = tf * idf
+            list[lemmas.indexOf(word)] = tfIdf
+        }
+        if (list.isEmpty()) throw IllegalArgumentException("Не нашел ни одного совпадения")
+        return list
+    }
+
+    fun clear() {
+        idfs.clear()
+    }
+
+}
+
 fun checkFileAndClean(file: File) {
     if (file.exists()) {
         file.delete()
@@ -337,6 +493,16 @@ fun checkFileAndClean(file: File) {
     file.createNewFile()
 }
 
+val unusedPartOfSpeech = listOf(
+    PartOfSpeech.Union,
+    PartOfSpeech.Numeral,
+    PartOfSpeech.OrdinalNumber,
+    PartOfSpeech.Pretext,
+    PartOfSpeech.Particle,
+)
+
 data class LemmaPair(val lemma: String, val word: String)
 
 data class Index(val word: String, val places: List<Int>)
+
+data class WordTfIdf(val word: String, val idf: Double, val tf_idf: Double)
